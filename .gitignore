@@ -1,0 +1,8 @@
+# Your own question sets stay local; the shipped CSV is the general one
+*-questions-*.csv
+questions/
+
+# Packaging and OS noise
+*.zip
+.DS_Store
+Thumbs.db

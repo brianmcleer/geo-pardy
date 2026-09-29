@@ -1,0 +1,811 @@
+<!--
+  GEO-PARDY  -  a GIS-themed quiz-show board for GIS Day (part of the gis-day-kit)
+  ------------------------------------------------------------------------------------
+  Lightweight, dependency-free, no server code. Files in one folder:
+     geo-pardy.html            (this file — the game framework)
+     geo-pardy-questions.csv   (your questions — edit in Excel)
+     web.config                (lets IIS serve the .csv/.wav and sets the default page)
+     sounds/                   (game sound effects: select, reveal, correct, wrong, daily, tie, win — .wav)
+
+  SOUNDS: the sounds/ folder holds original, license-free .wav effects. To use your own,
+  replace the files keeping the same names (or swap formats and update web.config MIME types).
+
+  Accessibility: built to WCAG 2.2 Level AA — full keyboard operation, focus management
+  and a focus trap for the clue dialog, visible focus indicators, AA color contrast, and
+  screen-reader announcements for clues, responses, and score changes.
+
+  QUESTIONS LIVE IN THE CSV. Open geo-pardy-questions.csv in Excel. One row per clue:
+     category | value | clue | answer | double
+  TIEBREAKER ROWS: set the category to "TIEBREAKER" (value blank) to add sudden-death clues
+  used only when teams tie for first place. They never appear on the board. Add as many as
+  you like; the host can step through them. If none are provided, the tiebreaker screen just
+  prompts the host to ask a question and pick the winner.
+  Save with File > Save As > CSV UTF-8 (Comma delimited). Keep the file name the same.
+
+  DEPLOY ON IIS: drop all three files into the same site folder. The page loads the CSV
+  automatically over http(s). (Opening the HTML directly off disk blocks the auto-load —
+  use the "Load CSV" button; over IIS it loads on its own.)
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geo-Pardy — GIS Day</title>
+<style>
+  :root{
+    --surround:#0a0f30;                       /* dark board surround */
+    --cat:#0c1d8e;                            /* category header cells */
+    --tile-top:#2f4cf0; --tile-bot:#0f20b4;   /* classic glossy blue gradient */
+    --tile:#1733c4; --tile-hover:#3a57f2; --tile-used:#3c4a86;
+    --clue-bg:#0b1ca8;                         /* full-screen clue blue */
+    --gold:#f4c430; --ink:#ffffff; --line:rgba(255,255,255,.10);
+    --edge:rgba(255,255,255,.45);             /* visible component borders (1.4.11) */
+    --green:#15803d; --red:#c62828;           /* AA contrast with white text */
+    --display:"Arial Narrow","Roboto Condensed","Helvetica Neue",Arial,sans-serif;
+    --body:"Segoe UI",system-ui,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{font-family:var(--body);color:var(--ink);min-height:100vh;
+    background:radial-gradient(120% 90% at 50% -10%, #16205a 0%, var(--surround) 55%, #05070f 100%);}
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background-image:
+      repeating-linear-gradient(0deg, var(--line) 0 1px, transparent 1px 64px),
+      repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 64px);
+    mask:radial-gradient(120% 80% at 50% 30%, #000 50%, transparent 100%);
+    -webkit-mask:radial-gradient(120% 80% at 50% 30%, #000 50%, transparent 100%);}
+  .wrap{position:relative;z-index:1;width:100%;margin:0;padding:18px 18px 22px;
+    min-height:100vh;display:flex;flex-direction:column}
+
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+    clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+  header.top{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px;margin-bottom:14px}
+  .brand{grid-column:2;text-align:center;line-height:.9}
+  .brand .word{margin:0;font-family:var(--display);font-weight:700;letter-spacing:.5px;text-transform:uppercase;
+    font-size:clamp(34px,7vw,68px);color:var(--gold);transform:skewX(-8deg);
+    text-shadow:3px 4px 0 #00114d, 0 0 26px rgba(244,196,48,.25);}
+  .brand .sub{font-family:var(--display);text-transform:uppercase;letter-spacing:3px;
+    font-size:clamp(11px,1.6vw,15px);color:#cdd6ff;margin-top:8px}
+  .controls{grid-column:3;justify-self:end;display:flex;gap:8px;flex-wrap:wrap}
+  @media (max-width:720px){
+    header.top{grid-template-columns:1fr}
+    .brand,.controls{grid-column:1;justify-self:center}
+  }
+  button{font-family:var(--body);cursor:pointer;border:0;border-radius:8px;
+    padding:9px 14px;font-size:14px;font-weight:600;color:#0a1a6a;background:var(--gold);
+    min-height:32px}
+  button.ghost{background:transparent;color:#e7ecff;border:1px solid var(--edge)}
+  button.ghost:hover{background:rgba(255,255,255,.10)}
+  button:focus-visible{outline:3px solid #fff;outline-offset:2px}
+
+  .board{display:grid;grid-template-columns:repeat(var(--cols,6),1fr);
+    grid-template-rows:auto repeat(var(--rows,5),1fr);gap:10px;flex:1 1 auto;min-height:0}
+  .cat{font-family:var(--display);text-transform:uppercase;font-weight:700;text-align:center;
+    background:var(--cat);border:1px solid var(--line);border-radius:6px;padding:14px 8px;min-height:84px;
+    display:flex;align-items:center;justify-content:center;font-size:clamp(16px,2.1vw,30px);
+    letter-spacing:.5px;line-height:1.08;text-shadow:1px 2px 0 #00114d;}
+  .tile{font-family:var(--display);font-weight:700;color:var(--gold);
+    background:linear-gradient(180deg,var(--tile-top) 0%,var(--tile-bot) 100%);
+    border:1px solid rgba(255,255,255,.3);border-radius:6px;width:100%;height:100%;min-height:54px;
+    box-shadow:inset 0 2px 0 rgba(255,255,255,.20), inset 0 -3px 7px rgba(0,0,0,.28);
+    font-size:clamp(22px,3.3vw,58px);text-shadow:0 2px 0 #001140, 0 3px 7px rgba(0,0,0,.45);
+    transition:filter .12s ease, transform .08s ease;}
+  .tile:hover{filter:brightness(1.13)}
+  .tile:active{transform:scale(.96)}
+  .tile[disabled]{background:#3c4a86;color:transparent;text-shadow:none;cursor:default;
+    border-color:var(--edge);box-shadow:none}
+  .tile.empty{visibility:hidden}
+
+  .scores{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+  .team{background:rgba(255,255,255,.06);border:1px solid var(--edge);border-radius:10px;
+    padding:10px 12px;min-width:150px;flex:1 1 150px}
+  .team .name{font-weight:700;font-size:14px;width:100%;background:transparent;border:0;color:#fff;
+    border-bottom:1px solid var(--edge);padding:2px 0;margin-bottom:6px}
+  .team .name:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+  .team .val{font-family:var(--display);font-size:30px;font-weight:700;color:var(--gold);text-align:center}
+  .team .row{display:flex;gap:6px;margin-top:6px;justify-content:center}
+  .team .row button{padding:6px 10px;font-size:15px;min-width:32px;min-height:32px;line-height:1}
+
+  .empty{margin-top:40px;text-align:center;color:#e7ecff;background:rgba(255,255,255,.06);
+    border:1px solid var(--edge);border-radius:14px;padding:40px 24px}
+  .empty h2{font-family:var(--display);text-transform:uppercase;letter-spacing:1px;margin:0 0 10px}
+  .empty p{margin:0 auto 18px;max-width:560px;line-height:1.5}
+
+  .overlay{position:fixed;inset:0;z-index:10;display:none;align-items:center;justify-content:center;
+    background:var(--clue-bg);padding:5vmin}
+  .overlay.show{display:flex;animation:pop .18s ease}
+  @keyframes pop{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:none}}
+  .panel{max-width:1100px;width:100%;text-align:center}
+  .panel .meta{font-family:var(--display);text-transform:uppercase;letter-spacing:2px;color:#e7ecff;
+    font-size:clamp(14px,2.2vw,22px);margin-bottom:18px}
+  .panel .meta b{color:var(--gold)}
+  .panel .clue{font-family:var(--display);text-transform:uppercase;font-weight:700;line-height:1.15;
+    font-size:clamp(28px,6vw,72px);text-shadow:2px 4px 0 #00114d;min-height:1.2em}
+  .panel .answer{color:var(--gold);font-weight:700;margin-top:26px;font-family:var(--display);
+    text-transform:uppercase;font-size:clamp(20px,4vw,46px);display:none}
+  .panel .answer.show{display:block;animation:pop .2s ease}
+  .panel .actions{margin-top:34px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+  .panel .award{margin-top:18px;display:none;gap:8px;justify-content:center;flex-wrap:wrap}
+  .panel .award.show{display:flex}
+  .award .grp{background:rgba(255,255,255,.06);border:1px solid var(--edge);border-radius:10px;padding:8px 10px}
+  .award .grp .lbl{font-size:13px;color:#e7ecff;margin-bottom:6px}
+  .award .grp .btns{display:flex;gap:6px}
+  .award button{min-height:32px}
+  .award .correct{background:var(--green);color:#fff}
+  .award .wrong{background:var(--red);color:#fff}
+
+  .double-splash{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    background:transparent;border:0;cursor:pointer;color:inherit;width:100%}
+  .double-splash .db{font-family:var(--display);text-transform:uppercase;font-weight:700;color:var(--gold);
+    font-size:clamp(40px,11vw,140px);text-shadow:4px 6px 0 #00114d;transform:skewX(-8deg);text-align:center;line-height:.95}
+  .double-splash small{display:block;font-size:.28em;letter-spacing:4px;color:#e7ecff;margin-top:.4em}
+
+  .endov{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;
+    background:rgba(6,16,74,.97);padding:5vmin;overflow:auto}
+  .endov.fxpaused .rays,
+  .endov.fxpaused .champion,
+  .endov.fxpaused .crown{animation-play-state:paused}
+  .endov.fxpaused::before{animation-play-state:paused}
+  .endov.show{display:flex;animation:pop .2s ease}
+  .end-panel{position:relative;z-index:2;text-align:center;max-width:900px;width:100%}
+  .end-panel .eyebrow{font-family:var(--display);text-transform:uppercase;letter-spacing:4px;
+    color:#e7ecff;font-size:clamp(13px,2vw,20px);margin-bottom:10px}
+  .end-panel .champion{font-family:var(--display);text-transform:uppercase;font-weight:700;color:var(--gold);
+    font-size:clamp(40px,9vw,110px);line-height:1;text-shadow:3px 5px 0 #00114d, 0 0 30px rgba(244,196,48,.35);
+    transform:skewX(-8deg);animation:gp-pop .55s cubic-bezier(.2,1.3,.4,1) both, gp-glowtext 2.4s ease-in-out .55s infinite}
+  .end-panel .standings{list-style:none;margin:30px auto 0;padding:0;max-width:460px;text-align:left}
+  .end-panel .standings li{display:flex;justify-content:space-between;gap:16px;
+    font-family:var(--display);text-transform:uppercase;font-size:clamp(16px,2.4vw,24px);
+    padding:8px 4px;border-bottom:1px solid var(--line);animation:gp-rise .4s ease both}
+  .end-panel .standings li.lead{color:var(--gold)}
+  .end-panel .standings .pos{opacity:.7;margin-right:10px}
+  .end-panel .end-actions{margin-top:34px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+  @keyframes gp-pop{from{opacity:0;transform:skewX(-8deg) scale(.8)}to{opacity:1;transform:skewX(-8deg) scale(1)}}
+
+  .tieov{position:fixed;inset:0;z-index:21;display:none;align-items:center;justify-content:center;
+    background:var(--clue-bg);padding:5vmin;overflow:auto}
+  .tieov.show{display:flex;animation:pop .2s ease}
+  .tie-panel{max-width:1000px;width:100%;text-align:center}
+  .tie-panel .eyebrow{font-family:var(--display);text-transform:uppercase;letter-spacing:4px;
+    color:#e7ecff;font-size:clamp(13px,2vw,20px);margin-bottom:10px}
+  .tie-title{font-family:var(--display);text-transform:uppercase;font-weight:700;color:var(--gold);
+    font-size:clamp(34px,7vw,84px);line-height:1;transform:skewX(-8deg);
+    text-shadow:3px 5px 0 #00114d, 0 0 26px rgba(244,196,48,.3)}
+  .tie-who{color:#e7ecff;font-family:var(--display);text-transform:uppercase;letter-spacing:1px;
+    font-size:clamp(15px,2.4vw,24px);margin-top:14px}
+  .tie-clue{font-family:var(--display);text-transform:uppercase;font-weight:700;line-height:1.15;
+    font-size:clamp(22px,4.5vw,52px);margin-top:26px;min-height:1.2em;text-shadow:2px 4px 0 #00114d}
+  .tie-answer{display:none;color:var(--gold);font-family:var(--display);text-transform:uppercase;
+    font-weight:700;font-size:clamp(18px,3.2vw,40px);margin-top:18px}
+  .tie-answer.show{display:block;animation:pop .2s ease}
+  .tie-actions{margin-top:28px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+  .tie-winners{margin-top:22px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+  .tie-winners .lbl{width:100%;color:#e7ecff;text-transform:uppercase;letter-spacing:1px;font-size:13px;margin-bottom:2px}
+  .tie-winners button{min-height:32px}
+
+  .confetti{position:absolute;inset:0;z-index:1;pointer-events:none;width:100%;height:100%}
+  .endov::before{content:"";position:absolute;inset:0;z-index:0;pointer-events:none;
+    background:radial-gradient(closest-side at 50% 42%, rgba(244,196,48,.20), transparent 72%);
+    animation:gp-glow 2.6s ease-in-out infinite}
+  .crown{width:clamp(54px,9vw,104px);height:auto;margin:0 auto 4px;display:block;fill:var(--gold);
+    filter:drop-shadow(0 4px 10px rgba(0,0,0,.45));animation:gp-bob 2.4s ease-in-out infinite}
+  @keyframes gp-glow{0%,100%{opacity:.5}50%{opacity:1}}
+  @keyframes gp-bob{0%,100%{transform:translateY(0) rotate(-2deg)}50%{transform:translateY(-8px) rotate(2deg)}}
+  @keyframes gp-glowtext{0%,100%{text-shadow:3px 5px 0 #00114d, 0 0 22px rgba(244,196,48,.35)}
+    50%{text-shadow:3px 5px 0 #00114d, 0 0 46px rgba(244,196,48,.8)}}
+  @keyframes gp-rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+  .rays{position:absolute;inset:-25%;z-index:0;pointer-events:none;opacity:0;
+    background:conic-gradient(from 0deg, rgba(244,196,48,.16) 0 8deg, transparent 8deg 30deg);
+    animation:gp-spin 16s linear infinite}
+  .endov.win .rays{opacity:1;transition:opacity .8s ease}
+  @keyframes gp-spin{to{transform:rotate(360deg)}}
+  .endov.win .champion{
+    background:linear-gradient(100deg,#c98f12 18%,#fff7cf 50%,#f4c430 82%);
+    background-size:220% 100%;-webkit-background-clip:text;background-clip:text;
+    color:transparent;-webkit-text-fill-color:transparent;text-shadow:none;
+    filter:drop-shadow(3px 5px 0 #00114d) drop-shadow(0 0 28px rgba(244,196,48,.6));
+    animation:gp-pop .55s cubic-bezier(.2,1.3,.4,1) both, gp-shimmer 2.2s linear .55s infinite}
+  @keyframes gp-shimmer{0%{background-position:210% 0}100%{background-position:-50% 0}}
+  @media (prefers-reduced-motion: reduce){.rays{display:none}}
+  @media (prefers-reduced-motion: reduce){.confetti{display:none}}
+
+  footer{margin-top:26px;text-align:center;color:#aebbff;font-size:12px;letter-spacing:.4px}
+  @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+  <div class="wrap" id="wrap">
+    <header class="top">
+      <div class="brand">
+        <h1 class="word">Geo-Pardy</h1>
+        <div class="sub">GIS Day</div>  <!-- EDIT ME: your organization name, e.g. "City of Example · GIS Day" -->
+      </div>
+      <div class="controls">
+        <button class="ghost" id="soundToggle" aria-pressed="true">Sound: On</button>
+        <button class="ghost" id="loadCsv">Load CSV</button>
+        <button class="ghost" id="addTeam">+ Team</button>
+        <button class="ghost" id="resetScores">Reset scores</button>
+        <button id="newGame">New game</button>
+      </div>
+    </header>
+
+    <main class="board" id="board" aria-label="Geo-Pardy game board"></main>
+
+    <section class="empty" id="empty" hidden>
+      <h2>No questions loaded</h2>
+      <p id="emptyMsg">Put <b>geo-pardy-questions.csv</b> in the same folder as this page and reload, or load the file now.</p>
+      <button id="emptyLoad">Load questions (.csv)</button>
+    </section>
+
+    <section class="scores" id="scores" aria-label="Team scores"></section>
+
+    <footer>Geo-Pardy is an original game for City GIS Day and is not affiliated with or endorsed by the Jeopardy! brand.</footer>
+  </div>
+
+  <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
+
+  <!-- live region for screen-reader announcements (kept outside the inert wrapper) -->
+  <div id="announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="overlay" id="overlay" role="dialog" aria-modal="true" aria-labelledby="ovMeta">
+    <div class="panel">
+      <p class="meta" id="ovMeta"><b id="ovCat">CATEGORY</b> &nbsp;·&nbsp; <span id="ovVal">$200</span></p>
+      <div class="clue" id="ovClue"></div>
+      <div class="answer" id="ovAnswer"></div>
+      <div class="actions">
+        <button id="revealBtn">Reveal response</button>
+        <button class="ghost" id="closeBtn">Back to board</button>
+      </div>
+      <div class="award" id="award"></div>
+    </div>
+    <button class="double-splash" id="splash" style="display:none" aria-label="Field Double — reveal the clue">
+      <span class="db" aria-hidden="true">Field<br>Double!<small>Press to continue</small></span>
+    </button>
+  </div>
+
+  <div class="endov" id="endOverlay" role="dialog" aria-modal="true" aria-labelledby="endTitle">
+    <div class="rays" aria-hidden="true"></div>
+    <canvas class="confetti" id="confetti" aria-hidden="true"></canvas>
+    <div class="end-panel">
+      <svg class="crown" viewBox="0 0 64 46" aria-hidden="true"><path d="M3 15l13 11L32 4l16 22 13-11-6 27H9z"/><rect x="8" y="41" width="48" height="5" rx="2.5"/></svg>
+      <p class="eyebrow">Geo-Pardy Champion</p>
+      <div class="champion" id="endTitle">Champion</div>
+      <ol class="standings" id="standings"></ol>
+      <div class="end-actions">
+        <button id="endNewGame">Play again</button>
+        <button class="ghost" id="endStop">Pause effects</button>
+        <button class="ghost" id="endClose">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="tieov" id="tieOverlay" role="dialog" aria-modal="true" aria-labelledby="tieTitle">
+    <div class="tie-panel">
+      <p class="eyebrow">Geo-Pardy</p>
+      <div class="tie-title" id="tieTitle">Tiebreaker!</div>
+      <div class="tie-who" id="tieWho"></div>
+      <div class="tie-clue" id="tieClue"></div>
+      <div class="tie-answer" id="tieAnswer"></div>
+      <div class="tie-actions">
+        <button id="tieReveal">Reveal response</button>
+        <button class="ghost" id="tieNext">Next clue</button>
+        <button class="ghost" id="tieDeclareTie">Declare a tie</button>
+      </div>
+      <div class="tie-winners" id="tieWinners"></div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const DEFAULT_TEAMS = ["Team 1","Team 2","Team 3"];
+  const CSV_FILE = "geo-pardy-questions.csv";
+
+  const wrap = document.getElementById('wrap');
+  const board = document.getElementById('board');
+  const scoresEl = document.getElementById('scores');
+  const emptyEl = document.getElementById('empty');
+  const emptyMsg = document.getElementById('emptyMsg');
+  const announcer = document.getElementById('announcer');
+  const overlay = document.getElementById('overlay');
+  const ovCat = document.getElementById('ovCat');
+  const ovVal = document.getElementById('ovVal');
+  const ovClue = document.getElementById('ovClue');
+  const ovAnswer = document.getElementById('ovAnswer');
+  const revealBtn = document.getElementById('revealBtn');
+  const closeBtn = document.getElementById('closeBtn');
+  const awardEl = document.getElementById('award');
+  const splash = document.getElementById('splash');
+  const fileInput = document.getElementById('fileInput');
+  const endOverlay = document.getElementById('endOverlay');
+  const endTitle = document.getElementById('endTitle');
+  const standings = document.getElementById('standings');
+  const confetti = document.getElementById('confetti');
+  const tieOverlay = document.getElementById('tieOverlay');
+  const tieTitle = document.getElementById('tieTitle');
+  const tieWho = document.getElementById('tieWho');
+  const tieClue = document.getElementById('tieClue');
+  const tieAnswer = document.getElementById('tieAnswer');
+  const tieReveal = document.getElementById('tieReveal');
+  const tieNext = document.getElementById('tieNext');
+  const tieDeclareTie = document.getElementById('tieDeclareTie');
+  const tieWinners = document.getElementById('tieWinners');
+
+  let gameEnded = false;
+  let confettiRAF = null;
+  let confettiTimers = [];
+  let fxOn = true;
+  let tieIndex = 0;
+
+  let model = null;
+  let teams = DEFAULT_TEAMS.map(n => ({ name:n, score:0 }));
+  const used = new Set();
+  let current = null;
+
+  const money = v => "$" + Number(v).toLocaleString();
+  const truthy = s => /^(true|yes|y|1|x)$/i.test(String(s||"").trim());
+  const escapeHtml = s => String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  function announce(msg){ announcer.textContent = ''; requestAnimationFrame(()=>{ announcer.textContent = msg; }); }
+
+  /* ---- sound: plays original CC0 audio files from the sounds/ folder (swap in your own, same names) ---- */
+  const Sound = (function(){
+    const DIR = 'sounds/';
+    const files = { select:'select.wav', reveal:'reveal.wav', correct:'correct.wav',
+                    wrong:'wrong.wav', daily:'daily.wav', tie:'tie.wav', win:'win.wav' };
+    const cache = {}; let enabled = true;
+    function load(name){
+      if (!cache[name]){ const a = new Audio(DIR + files[name]); a.preload = 'auto'; cache[name] = a; }
+      return cache[name];
+    }
+    function play(name){
+      if (!enabled || !files[name]) return;
+      try {
+        const el = new Audio(DIR + files[name]);   // fresh instance (served from cache after preload)
+        el.volume = (name === 'win') ? 0.8 : 0.6;
+        const p = el.play();
+        if (p && p.catch) p.catch(()=>{});
+      } catch(e){ /* missing file or blocked autoplay — ignore */ }
+    }
+    Object.keys(files).forEach(load);   // preload
+    return {
+      setEnabled(v){ enabled = v; },
+      isEnabled(){ return enabled; },
+      select(){ play('select'); },
+      reveal(){ play('reveal'); },
+      correct(){ play('correct'); },
+      wrong(){ play('wrong'); },
+      daily(){ play('daily'); },
+      tie(){ play('tie'); },
+      win(){ play('win'); }
+    };
+  })();
+
+  /* ---- CSV parsing (handles quotes, commas and newlines inside quotes) ---- */
+  function parseCSV(text){
+    text = text.replace(/^\uFEFF/, "");
+    const rows = []; let row = []; let field = ""; let i = 0; let inQ = false;
+    while (i < text.length){
+      const ch = text[i];
+      if (inQ){
+        if (ch === '"'){ if (text[i+1] === '"'){ field += '"'; i+=2; continue; } inQ = false; i++; continue; }
+        field += ch; i++; continue;
+      }
+      if (ch === '"'){ inQ = true; i++; continue; }
+      if (ch === ','){ row.push(field); field = ""; i++; continue; }
+      if (ch === '\r'){ i++; continue; }
+      if (ch === '\n'){ row.push(field); rows.push(row); row=[]; field=""; i++; continue; }
+      field += ch; i++;
+    }
+    if (field.length || row.length){ row.push(field); rows.push(row); }
+    return rows.filter(r => r.length && r.some(c => c.trim() !== ""));
+  }
+
+  function buildModel(text){
+    const rows = parseCSV(text);
+    if (!rows.length) throw new Error("The CSV is empty.");
+    const header = rows[0].map(h => h.trim().toLowerCase());
+    const idx = name => header.indexOf(name);
+    const ci = idx("category"), vi = idx("value"), cl = idx("clue"), ai = idx("answer"), di = idx("double");
+    if (ci<0 || vi<0 || cl<0 || ai<0) throw new Error("CSV needs columns: category, value, clue, answer (double optional).");
+    const categories = []; const values = []; const cells = new Map(); const tiebreakers = [];
+    for (let r=1; r<rows.length; r++){
+      const rec = rows[r];
+      const cat = (rec[ci]||"").trim();
+      if (!cat) continue;
+      if (cat.toLowerCase() === 'tiebreaker'){
+        const tv = parseInt((rec[vi]||"").trim(), 10);
+        tiebreakers.push({ clue:(rec[cl]||"").trim(), answer:(rec[ai]||"").trim(), value: isNaN(tv) ? null : tv }); continue;
+      }
+      const val = parseInt((rec[vi]||"").trim(), 10);
+      if (isNaN(val)) continue;
+      if (!categories.includes(cat)) categories.push(cat);
+      if (!values.includes(val)) values.push(val);
+      const key = cat + "|" + val;
+      if (!cells.has(key)) cells.set(key, { clue:(rec[cl]||"").trim(), answer:(rec[ai]||"").trim(), double: di>=0 && truthy(rec[di]) });
+    }
+    values.sort((a,b)=>a-b);
+    if (!categories.length) throw new Error("No questions found in the CSV.");
+    return { categories, values, cells, tiebreakers };
+  }
+
+  /* ---- board ---- */
+  function buildBoard(){
+    board.innerHTML = "";
+    if (!model){ emptyEl.hidden = false; board.style.display="none"; return; }
+    emptyEl.hidden = true; board.style.display="grid";
+    board.style.setProperty('--cols', model.categories.length);
+    board.style.setProperty('--rows', model.values.length);
+    model.categories.forEach(title => {
+      const h = document.createElement('div'); h.className='cat'; h.textContent = title; board.appendChild(h);
+    });
+    model.values.forEach(value => {
+      model.categories.forEach(cat => {
+        const key = cat + "|" + value;
+        const data = model.cells.get(key);
+        const btn = document.createElement('button');
+        btn.className = 'tile'; btn.type = 'button';
+        if (!data){ btn.classList.add('empty'); btn.disabled = true; btn.setAttribute('aria-hidden','true'); board.appendChild(btn); return; }
+        btn.textContent = money(value);
+        btn.setAttribute('aria-label', cat + ', ' + money(value));
+        if (used.has(key)){ btn.disabled = true; btn.setAttribute('aria-label', cat + ', ' + money(value) + ', already played'); }
+        btn.addEventListener('click', () => openClue(cat, value, data, btn, key));
+        board.appendChild(btn);
+      });
+    });
+  }
+
+  /* ---- clue dialog ---- */
+  function openClue(cat, value, data, tile, key){
+    current = { key, value, tile, double: !!data.double, answer: data.answer };
+    ovCat.textContent = cat;
+    ovVal.textContent = money(value);
+    ovClue.textContent = data.clue;
+    ovAnswer.textContent = ''; ovAnswer.classList.remove('show');
+    awardEl.classList.remove('show'); awardEl.innerHTML = '';
+    revealBtn.style.display = '';
+    overlay.classList.add('show');
+    wrap.inert = true; wrap.setAttribute('aria-hidden','true');   // focus trap + hide background
+    if (current.double){
+      splash.style.display='flex'; ovClue.style.visibility='hidden'; splash.focus();
+      Sound.daily();
+    } else {
+      splash.style.display='none'; ovClue.style.visibility='visible';
+      announce('Clue: ' + data.clue);
+      revealBtn.focus();
+      Sound.select();
+    }
+  }
+  function continueFromSplash(){
+    splash.style.display='none'; ovClue.style.visibility='visible';
+    announce('Clue: ' + (current ? ovClue.textContent : ''));
+    revealBtn.focus();
+  }
+  splash.addEventListener('click', continueFromSplash);
+
+  function revealAnswer(){
+    if (!current) return;
+    ovAnswer.textContent = current.answer;
+    ovAnswer.classList.add('show');
+    revealBtn.style.display='none';
+    buildAward();
+    awardEl.classList.add('show');
+    announce('Response: ' + current.answer);
+    Sound.reveal();
+    const first = awardEl.querySelector('button'); if (first) first.focus();
+  }
+  function buildAward(){
+    const pts = current.double ? current.value*2 : current.value;
+    awardEl.innerHTML = '';
+    teams.forEach(t => {
+      const grp = document.createElement('div'); grp.className='grp';
+      grp.innerHTML = '<div class="lbl">'+escapeHtml(t.name)+'</div>';
+      const btns = document.createElement('div'); btns.className='btns';
+      const ok = document.createElement('button'); ok.type='button'; ok.className='correct'; ok.textContent='+'+money(pts);
+      ok.setAttribute('aria-label', 'Award ' + money(pts) + ' to ' + t.name);
+      ok.addEventListener('click', ()=>{ Sound.correct(); t.score += pts; renderScores(); announce(t.name + ': ' + money(t.score)); closeClue(); });
+      const no = document.createElement('button'); no.type='button'; no.className='wrong'; no.textContent='-'+money(pts);
+      no.setAttribute('aria-label', 'Deduct ' + money(pts) + ' from ' + t.name);
+      no.addEventListener('click', ()=>{ Sound.wrong(); t.score -= pts; renderScores(); announce(t.name + ': ' + money(t.score)); });
+      btns.appendChild(ok); btns.appendChild(no); grp.appendChild(btns); awardEl.appendChild(grp);
+    });
+    const done = document.createElement('div'); done.className='grp';
+    done.innerHTML = '<div class="lbl">No award</div>';
+    const b = document.createElement('button'); b.type='button'; b.className='ghost'; b.textContent='Close';
+    b.setAttribute('aria-label','Close clue with no award');
+    b.addEventListener('click', closeClue); done.appendChild(b); awardEl.appendChild(done);
+  }
+  function closeClue(){
+    const tile = current ? current.tile : null;
+    if (current){ used.add(current.key); }
+    overlay.classList.remove('show');
+    wrap.inert = false; wrap.removeAttribute('aria-hidden');
+    current = null;
+    if (tile){ tile.disabled = true; tile.setAttribute('aria-label', (tile.getAttribute('aria-label')||'') + ', already played'); }
+    if (isBoardComplete() && !gameEnded){ showEnd(); return; }
+    const next = board.querySelector('.tile:not([disabled])');
+    (next || document.getElementById('newGame')).focus();
+  }
+
+  /* ---- end of game celebration ---- */
+  function isBoardComplete(){ return !!model && model.cells.size > 0 && used.size >= model.cells.size; }
+
+  function showEnd(){
+    gameEnded = true;
+    const ranked = teams.slice().sort((a,b)=>b.score - a.score);
+    const top = ranked.length ? ranked[0].score : 0;
+    const leaders = ranked.length ? ranked.filter(t => t.score === top) : [];
+    if (leaders.length > 1) showTiebreaker(leaders, top);   // tie for FIRST place only
+    else celebrate(ranked.length ? ranked[0] : null);
+  }
+
+  function celebrate(winner){
+    const ranked = teams.slice().sort((a,b)=>b.score - a.score);
+    endTitle.textContent = winner ? (winner.name + ' wins!') : "It's a tie!";
+    standings.innerHTML = '';
+    ranked.forEach((t,i) => {
+      const li = document.createElement('li');
+      if (winner && t === winner) li.className = 'lead';
+      li.style.animationDelay = (0.35 + i*0.08) + 's';
+      li.innerHTML = '<span><span class="pos">' + (i+1) + '.</span>' + escapeHtml(t.name) + '</span><span>' + money(t.score) + '</span>';
+      standings.appendChild(li);
+    });
+    announce('Game over. ' + (winner ? (winner.name + ' wins.') : "It's a tie."));
+    tieOverlay.classList.remove('show');
+    endOverlay.classList.remove('fxpaused'); fxOn = true;
+    document.getElementById('endStop').textContent = 'Pause effects';
+    endOverlay.classList.toggle('win', !!winner);
+    endOverlay.classList.add('show');
+    wrap.inert = true; wrap.setAttribute('aria-hidden','true');
+    if (winner){ Sound.win(); }
+    launchConfetti();
+    document.getElementById('endNewGame').focus();
+  }
+
+  // WCAG 2.2.2 — let the user pause/resume the continuous celebration effects
+  function toggleFx(){
+    fxOn = !fxOn;
+    const btn = document.getElementById('endStop');
+    if (fxOn){ endOverlay.classList.remove('fxpaused'); launchConfetti(); btn.textContent = 'Pause effects'; announce('Effects resumed.'); }
+    else { endOverlay.classList.add('fxpaused'); cancelConfetti(); btn.textContent = 'Resume effects'; announce('Effects paused.'); }
+  }
+
+  /* ---- first-place tiebreaker ---- */
+  function showTiebreaker(leaders, top){
+    tieIndex = 0;
+    tieWho.textContent = 'Tied for first: ' + leaders.map(t=>t.name).join(', ') + ' \u2014 ' + money(top);
+    tieWinners.innerHTML = '<div class="lbl">Choose the winner</div>';
+    leaders.forEach(t => {
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = t.name + ' wins';
+      b.setAttribute('aria-label', 'Declare ' + t.name + ' the winner');
+      b.addEventListener('click', () => resolveTie(t));
+      tieWinners.appendChild(b);
+    });
+    renderTieClue();
+    tieOverlay.classList.add('show');
+    wrap.inert = true; wrap.setAttribute('aria-hidden','true');
+    announce('Tiebreaker. Tied for first: ' + leaders.map(t=>t.name).join(', ') + '.');
+    Sound.tie();
+    const tbs = (model && model.tiebreakers) || [];
+    (tbs.length ? tieReveal : (tieWinners.querySelector('button') || tieDeclareTie)).focus();
+  }
+  function renderTieClue(){
+    const tbs = (model && model.tiebreakers) || [];
+    tieAnswer.classList.remove('show');
+    if (tbs.length){
+      const tb = tbs[tieIndex % tbs.length];
+      tieClue.textContent = tb.clue;
+      tieAnswer.textContent = tb.answer;
+      tieReveal.style.display = '';
+      tieNext.style.display = tbs.length > 1 ? '' : 'none';
+    } else {
+      tieClue.textContent = 'Ask a sudden-death question, then choose the winner below.';
+      tieReveal.style.display = 'none';
+      tieNext.style.display = 'none';
+    }
+  }
+  function revealTie(){
+    const tbs = (model && model.tiebreakers) || [];
+    if (!tbs.length) return;
+    tieAnswer.classList.add('show');
+    tieReveal.style.display = 'none';
+    announce('Response: ' + tieAnswer.textContent);
+    Sound.reveal();
+  }
+  function nextTie(){ tieIndex++; renderTieClue(); tieReveal.focus(); announce('Next tiebreaker clue.'); }
+  function resolveTie(team){
+    const tbs = (model && model.tiebreakers) || [];
+    const tb = tbs.length ? tbs[tieIndex % tbs.length] : null;
+    const minVal = (model && model.values && model.values.length) ? model.values[0] : 100;
+    const award = (tb && tb.value) ? tb.value : minVal;   // points that break the tie
+    team.score += award;
+    renderScores();
+    announce(team.name + ' wins the tiebreaker. ' + money(award) + ' added.');
+    celebrate(team);
+  }
+  function declareTieResult(){ celebrate(null); }
+
+  function reducedMotion(){ return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+
+  function launchConfetti(){
+    cancelConfetti();
+    if (reducedMotion()) return;
+    const canvas = confetti, ctx = canvas.getContext('2d');
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = window.innerWidth * dpr; canvas.height = window.innerHeight * dpr;
+    const W = canvas.width, H = canvas.height;
+    const colors = ['#f4c430','#2f4cf0','#ffffff','#15803d','#e8b22e','#cdd6ff','#ff5d5d'];
+    const parts = [];
+    const rnd = (a,b)=>a + Math.random()*(b-a);
+    const pick = ()=>colors[(Math.random()*colors.length)|0];
+    function confettiPiece(x,y,vx,vy){
+      parts.push({ type:'c', x,y,vx,vy, g:rnd(0.10,0.18)*dpr, size:rnd(6,12)*dpr,
+        rot:Math.random()*6.28, vr:rnd(-0.3,0.3), color:pick(), life:0, max:rnd(120,220) });
+    }
+    function streamer(x,y,vx,vy){
+      parts.push({ type:'s', x,y,vx,vy, g:rnd(0.05,0.09)*dpr, w:rnd(4,7)*dpr, h:rnd(24,44)*dpr,
+        rot:Math.random()*6.28, vr:rnd(-0.12,0.12), color:pick(), wob:rnd(0.05,0.12), ph:Math.random()*6.28, life:0, max:rnd(160,260) });
+    }
+    function cannon(x,y,n,power,ang,spread){
+      for (let i=0;i<n;i++){ const a = ang + rnd(-spread,spread); const sp = power*rnd(0.4,1)*dpr;
+        const vx = Math.cos(a)*sp, vy = Math.sin(a)*sp;
+        if (Math.random()<0.25) streamer(x,y,vx,vy); else confettiPiece(x,y,vx,vy); }
+    }
+    function firework(x,y,n){
+      for (let i=0;i<n;i++){ const a = Math.random()*6.28, sp = rnd(3,9)*dpr;
+        parts.push({ type:'c', x,y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp, g:0.06*dpr,
+          size:rnd(4,8)*dpr, rot:0, vr:rnd(-0.2,0.2), color:pick(), life:0, max:rnd(40,80) }); }
+    }
+    cannon(W*0.5, H*0.5, 200, 13, -Math.PI/2, 1.0);                    // big opening burst
+    const shots = [[W*0.05, H*1.02, -Math.PI/2.6], [W*0.95, H*1.02, -Math.PI/1.63]];
+    // keep going continuously — stops only when the overlay closes / new game / new CSV
+    confettiTimers.push(setInterval(()=>{ if (parts.length < 700) shots.forEach(s=>cannon(s[0],s[1],40,15,s[2],0.30)); }, 480));
+    confettiTimers.push(setInterval(()=>{ if (parts.length < 800) firework(rnd(W*0.15,W*0.85), rnd(H*0.15,H*0.45), 54); }, 950));
+    (function tick(){
+      ctx.clearRect(0,0,W,H);
+      for (let i=parts.length-1;i>=0;i--){
+        const p = parts[i]; p.life++;
+        p.vy += p.g; p.x += p.vx; p.y += p.vy;
+        if (p.type==='s') p.x += Math.sin(p.life*p.wob + p.ph)*1.5*dpr;
+        p.rot += p.vr;
+        const a = Math.max(0, 1 - p.life/p.max);
+        if (a<=0 || p.y > H + 60){ parts.splice(i,1); continue; }
+        ctx.save(); ctx.globalAlpha = a; ctx.translate(p.x,p.y); ctx.rotate(p.rot); ctx.fillStyle = p.color;
+        if (p.type==='s') ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h);
+        else ctx.fillRect(-p.size/2,-p.size/2,p.size,p.size*0.62);
+        ctx.restore();
+      }
+      confettiRAF = requestAnimationFrame(tick);   // runs until cancelConfetti()
+    })();
+  }
+  function cancelConfetti(){
+    if (confettiRAF){ cancelAnimationFrame(confettiRAF); confettiRAF = null; }
+    confettiTimers.forEach(id => { clearTimeout(id); clearInterval(id); }); confettiTimers = [];
+    const ctx = confetti.getContext && confetti.getContext('2d');
+    if (ctx) ctx.clearRect(0,0,confetti.width,confetti.height);
+  }
+
+  function closeEnd(){
+    endOverlay.classList.remove('show','win','fxpaused');
+    cancelConfetti();
+    wrap.inert = false; wrap.removeAttribute('aria-hidden');
+    document.getElementById('newGame').focus();
+  }
+
+  function startNewGame(){
+    used.clear(); gameEnded = false;
+    endOverlay.classList.remove('show','win','fxpaused'); tieOverlay.classList.remove('show'); cancelConfetti();
+    wrap.inert = false; wrap.removeAttribute('aria-hidden');
+    buildBoard();
+    announce('New game. All clues available.');
+    const first = board.querySelector('.tile:not([disabled])');
+    if (first) first.focus();
+  }
+
+  /* ---- scores ---- */
+  function renderScores(){
+    scoresEl.innerHTML = '';
+    teams.forEach((t,i)=>{
+      const card = document.createElement('div'); card.className='team';
+      const name = document.createElement('input'); name.type='text'; name.className='name'; name.value=t.name;
+      name.setAttribute('aria-label', 'Team ' + (i+1) + ' name');
+      name.addEventListener('input', e => t.name = e.target.value);
+      const val = document.createElement('div'); val.className='val'; val.textContent=money(t.score);
+      const row = document.createElement('div'); row.className='row';
+      const minus = document.createElement('button'); minus.type='button'; minus.textContent='−'; minus.className='ghost';
+      minus.setAttribute('aria-label','Subtract $100 from ' + t.name);
+      minus.addEventListener('click', ()=>{ t.score-=100; renderScores(); announce(t.name + ': ' + money(t.score)); });
+      const plus = document.createElement('button'); plus.type='button'; plus.textContent='+'; plus.className='ghost';
+      plus.setAttribute('aria-label','Add $100 to ' + t.name);
+      plus.addEventListener('click', ()=>{ t.score+=100; renderScores(); announce(t.name + ': ' + money(t.score)); });
+      const rm = document.createElement('button'); rm.type='button'; rm.textContent='✕'; rm.className='ghost';
+      rm.setAttribute('aria-label','Remove ' + t.name);
+      rm.addEventListener('click', ()=>{ const n=t.name; teams.splice(i,1); renderScores(); announce('Removed ' + n); });
+      row.appendChild(minus); row.appendChild(plus); row.appendChild(rm);
+      card.appendChild(name); card.appendChild(val); card.appendChild(row); scoresEl.appendChild(card);
+    });
+  }
+
+  /* ---- data loading ---- */
+  function loadFromText(text){
+    try { model = buildModel(text); used.clear(); gameEnded = false; endOverlay.classList.remove('show','win'); tieOverlay.classList.remove('show'); cancelConfetti(); buildBoard(); announce('Questions loaded.'); }
+    catch(err){ model=null; buildBoard(); emptyMsg.textContent = "Could not read the CSV: " + err.message; }
+  }
+  function tryFetch(){
+    const onHttp = location.protocol === 'http:' || location.protocol === 'https:';
+    const url = onHttp ? (CSV_FILE + '?v=' + Date.now()) : CSV_FILE;
+    fetch(url, { cache: 'no-store' })
+      .then(r => { if(!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+      .then(loadFromText)
+      .catch(() => {
+        emptyMsg.innerHTML = (location.protocol === 'file:')
+          ? "You're opening this file directly off disk, so the browser blocks auto-loading the CSV. On the web server it loads on its own \u2014 for now, load the file below."
+          : "Couldn't find <b>" + CSV_FILE + "</b> in this folder (or IIS isn't serving .csv). Add the web.config included with these files, then reload \u2014 or load the file below.";
+        buildBoard();
+      });
+  }
+  function pickFile(){ fileInput.click(); }
+  fileInput.addEventListener('change', e => {
+    const f = e.target.files[0]; if(!f) return;
+    const reader = new FileReader();
+    reader.onload = () => loadFromText(reader.result);
+    reader.readAsText(f);
+    fileInput.value = "";
+  });
+
+  /* ---- controls ---- */
+  revealBtn.addEventListener('click', revealAnswer);
+  closeBtn.addEventListener('click', closeClue);
+  document.getElementById('loadCsv').addEventListener('click', pickFile);
+  document.getElementById('emptyLoad').addEventListener('click', pickFile);
+  document.getElementById('addTeam').addEventListener('click', ()=>{ teams.push({name:'Team '+(teams.length+1), score:0}); renderScores(); announce('Team added.'); });
+  document.getElementById('resetScores').addEventListener('click', ()=>{ teams.forEach(t=>t.score=0); renderScores(); announce('Scores reset.'); });
+  document.getElementById('newGame').addEventListener('click', startNewGame);
+  document.getElementById('endNewGame').addEventListener('click', startNewGame);
+  document.getElementById('endStop').addEventListener('click', toggleFx);
+  document.getElementById('endClose').addEventListener('click', closeEnd);
+  const soundBtn = document.getElementById('soundToggle');
+  soundBtn.addEventListener('click', () => {
+    const on = !Sound.isEnabled();
+    Sound.setEnabled(on);
+    soundBtn.textContent = 'Sound: ' + (on ? 'On' : 'Off');
+    soundBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (on) Sound.select();
+    announce('Sound ' + (on ? 'on' : 'off'));
+  });
+  tieReveal.addEventListener('click', revealTie);
+  tieNext.addEventListener('click', nextTie);
+  tieDeclareTie.addEventListener('click', declareTieResult);
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (tieOverlay.classList.contains('show')) declareTieResult();
+    else if (endOverlay.classList.contains('show')) closeEnd();
+    else if (overlay.classList.contains('show')) closeClue();
+  });
+
+  // ---- dev helper: add ?dev (or #dev) to the URL to enable ----
+  const DEV = /[?&#]dev\b/i.test(location.search + location.hash);
+  if (DEV){
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'ghost'; b.id = 'devFinish'; b.textContent = 'End (dev)';
+    b.title = 'Dev only: mark all clues played and show the celebration';
+    b.addEventListener('click', () => {
+      if (!model){ announce('Load questions first.'); return; }
+      model.cells.forEach((_, k) => used.add(k));        // mark every clue played
+      if (teams.length && teams.every(t => t.score === 0)){
+        teams.forEach((t, i) => { t.score = (teams.length - i) * 800; });  // demo leader
+      }
+      renderScores();
+      buildBoard();
+      gameEnded = false;
+      showEnd();
+    });
+    document.querySelector('.controls').appendChild(b);
+  }
+
+  renderScores();
+  tryFetch();
+})();
+</script>
+</body>
+</html>
