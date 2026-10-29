@@ -1,0 +1,17 @@
+name: Question idea
+description: A category or question to add to the question bank
+labels: ["questions"]
+body:
+  - type: input
+    id: category
+    attributes:
+      label: Category
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question and answer
+      description: One per line as "value, question, answer"
+    validations:
+      required: true
