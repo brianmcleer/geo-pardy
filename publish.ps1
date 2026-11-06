@@ -33,7 +33,15 @@ $ReleaseFiles    = @("geo-pardy.html", "geo-pardy-questions.csv", "web.config", 
 # ----------------------------------------------------------------------------
 
 # Strings that identify a specific deployment. Extend the list when a new one is noticed.
-$ForbiddenPattern = "gjcity|grand junction|198\.204\.|internal22|external22|external25|portal22|hosting22|internal-gis|external-gis|Lincoln Park|Einstein|Persigo|mcleer"
+# Infrastructure names (servers, hosts, IP prefix) come from publish-guard.txt in the
+# parent Documents\GitHub folder. That file is outside every repo, so the list is never
+# published. Publishing stops if it is missing.
+$GuardDir  = if ($PSScriptRoot) { Split-Path -Parent $PSScriptRoot } else { Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path) }
+$GuardFile = Join-Path $GuardDir "publish-guard.txt"
+if (-not (Test-Path -LiteralPath $GuardFile)) { throw "publish-guard.txt not found at $GuardFile. Restore it before publishing." }
+$GuardPattern = ((Get-Content -LiteralPath $GuardFile) | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith("#") }) -join "|"
+if (-not $GuardPattern) { throw "publish-guard.txt has no patterns in it." }
+$ForbiddenPattern = "gjcity|grand junction|Lincoln Park|Einstein|Persigo|mcleer|$GuardPattern"
 
 $RepoPath = $PSScriptRoot
 if (-not $RepoPath) { $RepoPath = Split-Path -Parent $MyInvocation.MyCommand.Path }
