@@ -22,6 +22,12 @@
   prompts the host to ask a question and pick the winner.
   Save with File > Save As > CSV UTF-8 (Comma delimited). Keep the file name the same.
 
+  GAME MODES (set in the URL):
+     geo-pardy.html?mode=simple     Simple: no Field Doubles. Every clue is worth its face value.
+     geo-pardy.html?mode=advanced   Advanced: Field Doubles on (rows with double = TRUE pay 2x).
+  No ?mode in the URL = Advanced. The welcome screen shows which mode is on and has a
+  button to switch.
+
   DEPLOY ON IIS: drop all three files into the same site folder. The page loads the CSV
   automatically over http(s). (Opening the HTML directly off disk blocks the auto-load —
   use the "Load CSV" button; over IIS it loads on its own.)
@@ -211,6 +217,33 @@
   @media (prefers-reduced-motion: reduce){.rays{display:none}}
   @media (prefers-reduced-motion: reduce){.confetti{display:none}}
 
+  /* welcome / rules screen (shown on load; reopen with the Rules button) */
+  .welcomeov{position:fixed;inset:0;z-index:22;display:none;align-items:flex-start;justify-content:center;
+    background:var(--clue-bg);padding:4vmin;overflow:auto}
+  .welcomeov.show{display:flex;animation:pop .2s ease}
+  .welcome-panel{max-width:1100px;width:100%;text-align:center;margin:auto}
+  .welcome-panel .eyebrow{font-family:var(--display);text-transform:uppercase;letter-spacing:4px;
+    color:#e7ecff;font-size:clamp(13px,2vw,20px);margin-bottom:6px}
+  .welcome-title{font-family:var(--display);text-transform:uppercase;font-weight:700;color:var(--gold);
+    font-size:clamp(34px,6vw,76px);line-height:1;transform:skewX(-8deg);
+    text-shadow:3px 5px 0 #00114d, 0 0 26px rgba(244,196,48,.3)}
+  .welcome-sub{color:#e7ecff;font-family:var(--display);text-transform:uppercase;letter-spacing:2px;
+    font-size:clamp(14px,2.2vw,22px);margin-top:10px}
+  .rules{list-style:none;margin:22px auto 0;padding:0;max-width:1100px;text-align:left;
+    display:grid;gap:10px;grid-template-columns:1fr 1fr}
+  @media (max-width:900px){.rules{grid-template-columns:1fr;max-width:720px}}
+  .rules li{display:grid;grid-template-columns:40px 1fr;gap:12px;align-items:center;
+    background:rgba(255,255,255,.06);border:1px solid var(--edge);border-radius:10px;padding:10px 14px;
+    font-size:clamp(14px,1.45vw,18px);line-height:1.35}
+  .rules .n{font-family:var(--display);font-weight:700;color:var(--gold);font-size:clamp(22px,3vw,34px);
+    text-align:center;text-shadow:1px 2px 0 #00114d}
+  .rules b{color:var(--gold)}
+  .welcome-actions{margin-top:30px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+  .welcome-actions button{font-size:16px;padding:12px 22px}
+  .mode-badge{display:inline-block;margin-top:14px;padding:6px 14px;border:1px solid var(--edge);border-radius:999px;
+    font-family:var(--display);text-transform:uppercase;letter-spacing:2px;font-size:clamp(12px,1.6vw,15px);color:#e7ecff}
+  .mode-badge b{color:var(--gold)}
+
   footer{margin-top:26px;text-align:center;color:#aebbff;font-size:12px;letter-spacing:.4px}
   @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -223,6 +256,7 @@
         <div class="sub">GIS Day</div>  <!-- EDIT ME: your organization name, e.g. "City of Example · GIS Day" -->
       </div>
       <div class="controls">
+        <button class="ghost" id="rulesBtn">Rules</button>
         <button class="ghost" id="soundToggle" aria-pressed="true">Sound: On</button>
         <button class="ghost" id="loadCsv">Load CSV</button>
         <button class="ghost" id="addTeam">+ Team</button>
@@ -281,6 +315,31 @@
     </div>
   </div>
 
+  <div class="welcomeov" id="welcomeOverlay" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle" aria-describedby="rulesList">
+    <div class="welcome-panel">
+      <p class="eyebrow">GIS Day</p>  <!-- EDIT ME: your organization name -->
+      <div class="welcome-title" id="welcomeTitle">Welcome to Geo-Pardy!</div>
+      <div class="welcome-sub">How to play</div>
+      <div class="mode-badge" id="modeBadge">Game mode: <b id="modeName">Advanced</b></div>
+      <ol class="rules" id="rulesList">
+        <li><span class="n" aria-hidden="true">1</span><span><b>Teams:</b> split into teams. Each team picks a name and a <b>spokesperson</b>. Only the spokesperson's answer counts, but the whole team can huddle.</span></li>
+        <li><span class="n" aria-hidden="true">2</span><span><b>First pick:</b> the host decides who starts (coin flip, or the team that got here first). That team picks a <b>category</b> and a <b>dollar value</b> from the board.</span></li>
+        <li><span class="n" aria-hidden="true">3</span><span><b>The clue:</b> the host reads it out loud. First team to <b>raise a hand</b> gets to answer. The host calls on you, so no shouting it out.</span></li>
+        <li><span class="n" aria-hidden="true">4</span><span><b>Answer as a question:</b> <b>"What is..."</b> or <b>"Who is..."</b> Forget the question form and the host may ask you to try again. You get <b>10 seconds</b> once you're called on.</span></li>
+        <li><span class="n" aria-hidden="true">5</span><span><b>Scoring:</b> correct <b>adds</b> the dollar value. Wrong <b>subtracts</b> it. Yes, you can go negative.</span></li>
+        <li><span class="n" aria-hidden="true">6</span><span><b>Steals:</b> if a team misses, the other teams can raise a hand and try. One attempt per team per clue. If nobody gets it, the host reveals the answer and no points change.</span></li>
+        <li><span class="n" aria-hidden="true">7</span><span><b>Next pick:</b> the team that answered correctly picks the next clue. If nobody got it, the team that picked last picks again.</span></li>
+        <li id="ruleDouble"><span class="n" aria-hidden="true">8</span><span><b>Field Double:</b> hidden on the board. Hit one and only <b>your team</b> answers, no steals. Correct gets <b>double</b> the value, wrong loses double. Choose wisely.</span></li>
+        <li><span class="n" aria-hidden="true">9</span><span><b>Game over:</b> when the board is cleared, highest score wins. A tie for first goes to a <b>sudden-death tiebreaker</b>: first hand up answers, correct wins, wrong hands it to the other team.</span></li>
+        <li><span class="n" aria-hidden="true">10</span><span><b>Host rules:</b> close-enough answers, spelling and pronunciation are the host's call, and the host's ruling is final. <b>Prizes</b> for the winning team!</span></li>
+      </ol>
+      <div class="welcome-actions">
+        <button id="welcomeStart">Let's play</button>
+        <button class="ghost" id="modeSwitch">Switch to Simple mode</button>
+      </div>
+    </div>
+  </div>
+
   <div class="tieov" id="tieOverlay" role="dialog" aria-modal="true" aria-labelledby="tieTitle">
     <div class="tie-panel">
       <p class="eyebrow">Geo-Pardy</p>
@@ -301,6 +360,13 @@
 (function(){
   const DEFAULT_TEAMS = ["Team 1","Team 2","Team 3"];
   const CSV_FILE = "geo-pardy-questions.csv";
+
+  /* ---- game mode from the URL: ?mode=simple (no Field Doubles) or ?mode=advanced (default) ---- */
+  const MODE = (function(){
+    const m = (new URLSearchParams(location.search).get('mode') || '').trim().toLowerCase();
+    return m === 'simple' ? 'simple' : 'advanced';
+  })();
+  const ADVANCED = MODE === 'advanced';
 
   const wrap = document.getElementById('wrap');
   const board = document.getElementById('board');
@@ -457,7 +523,7 @@
 
   /* ---- clue dialog ---- */
   function openClue(cat, value, data, tile, key){
-    current = { key, value, tile, double: !!data.double, answer: data.answer };
+    current = { key, value, tile, double: ADVANCED && !!data.double, answer: data.answer };
     ovCat.textContent = cat;
     ovVal.textContent = money(value);
     ovClue.textContent = data.clue;
@@ -776,9 +842,49 @@
   tieReveal.addEventListener('click', revealTie);
   tieNext.addEventListener('click', nextTie);
   tieDeclareTie.addEventListener('click', declareTieResult);
+  /* ---- welcome / rules screen ---- */
+  const welcomeOverlay = document.getElementById('welcomeOverlay');
+  let welcomeReturn = null;
+  function showWelcome(){
+    welcomeReturn = document.activeElement;
+    welcomeOverlay.classList.add('show');
+    wrap.inert = true; wrap.setAttribute('aria-hidden','true');
+    announce('Welcome to Geo-Pardy. How to play.');
+    document.getElementById('welcomeStart').focus();
+  }
+  function closeWelcome(){
+    welcomeOverlay.classList.remove('show');
+    wrap.inert = false; wrap.removeAttribute('aria-hidden');
+    Sound.select();
+    const first = board.querySelector('.tile:not([disabled])');
+    (first || (welcomeReturn && welcomeReturn.focus ? welcomeReturn : document.getElementById('newGame'))).focus();
+    welcomeReturn = null;
+  }
+  document.getElementById('welcomeStart').addEventListener('click', closeWelcome);
+  document.getElementById('rulesBtn').addEventListener('click', showWelcome);
+
+  // reflect the game mode on the welcome screen
+  (function applyMode(){
+    document.getElementById('modeName').textContent = ADVANCED ? 'Advanced' : 'Simple';
+    const sw = document.getElementById('modeSwitch');
+    sw.textContent = ADVANCED ? 'Switch to Simple mode' : 'Switch to Advanced mode';
+    sw.addEventListener('click', () => {
+      const u = new URL(location.href);
+      u.searchParams.set('mode', ADVANCED ? 'simple' : 'advanced');
+      location.href = u.toString();
+    });
+    if (!ADVANCED){
+      const li = document.getElementById('ruleDouble');
+      if (li) li.remove();
+      document.querySelectorAll('#rulesList li .n').forEach((n,i) => { n.textContent = String(i+1); });
+    }
+    document.title = 'Geo-Pardy — GIS Day' + (ADVANCED ? '' : ' (Simple)');
+  })();
+
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
-    if (tieOverlay.classList.contains('show')) declareTieResult();
+    if (welcomeOverlay.classList.contains('show')) closeWelcome();
+    else if (tieOverlay.classList.contains('show')) declareTieResult();
     else if (endOverlay.classList.contains('show')) closeEnd();
     else if (overlay.classList.contains('show')) closeClue();
   });
@@ -805,6 +911,7 @@
 
   renderScores();
   tryFetch();
+  showWelcome();
 })();
 </script>
 </body>
